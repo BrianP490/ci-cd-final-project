@@ -1,0 +1,101 @@
+# Tekton is a powerful and flexible open-source framework for creating CI/CD systems.
+# The 'Task' is the smallest execution unit in a Tekton Pipeline, consisting of one or more Steps.
+
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  # The unique name for this Task resource.
+  name: cleanup
+spec:
+  # A human-readable description of what this Task does.
+  description: This task will clean up a workspace by deleting all of the files.
+  
+  # Defines the required storage volumes (Workspaces) this Task needs to access.
+  workspaces:
+    # A single workspace named 'source' is required, typically used for the repository checkout.
+    - name: source
+  
+  # Defines the sequential set of actions to be executed.
+  steps:
+    - name: remove
+      # The container image to use for executing this step's script. 
+      # Alpine is a small, lightweight image suitable for simple shell commands.
+      image: alpine:3
+      
+      # Defines environment variables to be set inside the container for this step.
+      env:
+        - name: WORKSPACE_SOURCE_PATH
+          # Sets the variable value to the absolute path of the 'source' workspace inside the container.
+          value: $(workspaces.source.path)
+          
+      # Sets the current working directory inside the container for the script execution.
+      workingDir: $(workspaces.source.path)
+      
+      # Defines security settings for the container execution.
+      securityContext:
+        # Allows running as the root user (UID 0) inside the container, which is often needed for cleanup operations.
+        runAsNonRoot: false
+        runAsUser: 0
+        
+      # The shell script to execute inside the container.
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
+        # The following 'rm' commands are a safe way to empty the workspace directory content 
+        # without deleting the directory mount point itself (which could be the root of a volume).
+        
+        # Check if the workspace directory exists before attempting cleanup.
+        if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
+          # Delete non-hidden files and directories (*)
+          rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
+          # Delete files and directories starting with '.' but exclude '..' (parent directory).
+          rm -rf "${WORKSPACE_SOURCE_PATH}"/.[!.]*
+          # Delete files and directories starting with '..' plus any other character.
+          rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
+        fi
+
+---
+# The second Task defined in this file.
+
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  # The unique name for this Task resource.
+  name: nose
+spec:
+  # A description of the Task's purpose.
+  description: This task will run unit tests.
+  
+  # Defines the required storage volume for source code/tests.
+  workspaces:
+    - name: source
+    
+  # Defines input parameters that can be passed to the Task when it runs in a Pipeline.
+  params:
+    - name: args
+      description: Arguments to pass to nose
+      type: string
+      # Provides a default value if the parameter is not supplied.
+      default: "-v"
+      
+  # Defines the single step for running the tests.
+  steps:
+    - name: nosetests
+      # Uses a Python image to ensure the Python runtime and 'pip' are available.
+      image: python:3.9-slim
+      
+      # Sets the working directory to the path of the 'source' workspace (where code is checked out).
+      workingDir: $(workspaces.source.path)
+      
+      # The shell script to execute the test process.
+      script: |
+        #!/bin/bash
+        # Exit immediately if a command exits with a non-zero status.
+        set -e
+        # Upgrade pip and install 'wheel' for better dependency management.
+        python -m pip install --upgrade pip wheel
+        # Install project dependencies required for tests from the 'requirements.txt' file.
+        pip install -r requirements.txt
+        # Execute 'nosetests' with the arguments passed via the Tekton parameter.
+        nosetests $(params.args)
